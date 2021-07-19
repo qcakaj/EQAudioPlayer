@@ -1,4 +1,4 @@
-package com.ckj.easyaudioplayer
+package com.ckj.eqaudioplayer
 
 import org.junit.Test
 

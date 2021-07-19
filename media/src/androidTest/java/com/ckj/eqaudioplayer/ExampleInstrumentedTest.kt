@@ -1,4 +1,4 @@
-package com.ckj.easyaudioplayer
+package com.ckj.eqaudioplayer
 
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.ext.junit.runners.AndroidJUnit4

@@ -1,16 +1,12 @@
-package com.ckj.easyaudioplayer
+package com.ckj.eqaudioplayer
 
 
 import android.R
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
@@ -28,20 +24,23 @@ import android.telephony.PhoneStateListener
 import android.telephony.TelephonyManager
 import android.util.Log
 import androidx.core.app.NotificationCompat.*
-import androidx.core.content.ContextCompat
-import androidx.media.app.NotificationCompat
 import com.ckj.commonv2.Audio
 import com.ckj.commonv2.StorageUtil
+import com.ckj.eqaudioplayer.EQNotificationManager.Companion.ACTION_NEXT
+import com.ckj.eqaudioplayer.EQNotificationManager.Companion.ACTION_PAUSE
+import com.ckj.eqaudioplayer.EQNotificationManager.Companion.ACTION_PLAY
+import com.ckj.eqaudioplayer.EQNotificationManager.Companion.ACTION_PREVIOUS
+import com.ckj.eqaudioplayer.EQNotificationManager.Companion.ACTION_STOP
 import java.io.IOException
 
 
-class AudioPlayerService : Service(), MediaPlayer.OnCompletionListener,
+class MediaService : Service(), MediaPlayer.OnCompletionListener,
     MediaPlayer.OnPreparedListener, MediaPlayer.OnErrorListener, MediaPlayer.OnSeekCompleteListener,
     MediaPlayer.OnInfoListener, MediaPlayer.OnBufferingUpdateListener,
     AudioManager.OnAudioFocusChangeListener {
 
     private val localBinder = LocalBinder()
-     var mediaPlayer: MediaPlayer? = null
+    var mediaPlayer: MediaPlayer? = null
     private var audioManager: AudioManager? = null
 
     //Used to pause/resume MediaPlayer
@@ -51,54 +50,45 @@ class AudioPlayerService : Service(), MediaPlayer.OnCompletionListener,
     private var ongoingCall = false
     private var phoneStateListener: PhoneStateListener? = null
     private var telephonyManager: TelephonyManager? = null
+    private var notificationManager: EQNotificationManager? = null
+
 
     //List of available Audio files
     private var audioList: List<Audio?>? = null
-    private var audioIndex  : Int = -1
+    private var audioIndex: Int = -1
     private var activeAudio //an object of the currently playing audio
             : Audio? = null
-
-    val ACTION_PLAY = "com.ckj.audioplayer.ACTION_PLAY"
-    val ACTION_PAUSE = "com.ckj.audioplayer.ACTION_PAUSE"
-    val ACTION_PREVIOUS = "com.ckj.audioplayer.ACTION_PREVIOUS"
-    val ACTION_NEXT = "com.ckj.audioplayer.ACTION_NEXT"
-    val ACTION_STOP = "com.ckj.audioplayer.ACTION_STOP"
 
     //MediaSession
     private var mediaSessionManager: MediaSessionManager? = null
     private var mediaSession: MediaSessionCompat? = null
     private var transportControls: MediaControllerCompat.TransportControls? = null
-    private lateinit var notificationManager: NotificationManager
 
-    //AudioPlayer notification ID
-    private val NOTIFICATION_ID = 101
 
     private val playNewAudio: BroadcastReceiver by lazy {
         object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
+            override fun onReceive(context: Context, intent: Intent) {
 
-            //Get the new media index form SharedPreferences
-            audioIndex = StorageUtil(applicationContext).loadAudioIndex() ?: 2
-            if (audioIndex != -1 && audioIndex < audioList!!.size) {
-                //index is in a valid range
-                activeAudio = audioList!![audioIndex]
-            } else {
-                stopSelf()
+                //Get the new media index form SharedPreferences
+                audioIndex = StorageUtil(applicationContext).loadAudioIndex() ?: 2
+                if (audioIndex != -1 && audioIndex < audioList!!.size) {
+                    //index is in a valid range
+                    activeAudio = audioList!![audioIndex]
+                } else {
+                    stopSelf()
+                }
+
+                //A PLAY_NEW_AUDIO action received
+                //reset mediaPlayer to play the new Audio
+                stopMedia()
+                mediaPlayer?.reset()
+                initMediaPlayer()
+                updateMetaData()
+                notificationManager?.updateNotification(PlaybackStatus.PLAYING)
+
+
             }
-
-            //A PLAY_NEW_AUDIO action received
-            //reset mediaPlayer to play the new Audio
-            stopMedia()
-            mediaPlayer?.reset()
-            initMediaPlayer()
-            updateMetaData()
-            notificationManager.notify(
-                NOTIFICATION_ID,
-                buildNotification(PlaybackStatus.PLAYING).build()
-            )
-
         }
-    }
     }
 
     //Becoming noisy
@@ -106,10 +96,8 @@ class AudioPlayerService : Service(), MediaPlayer.OnCompletionListener,
         override fun onReceive(context: Context, intent: Intent) {
             //pause audio on ACTION_AUDIO_BECOMING_NOISY
             pauseMedia()
-            notificationManager.notify(
-                NOTIFICATION_ID,
-                buildNotification(PlaybackStatus.PAUSED).build()
-            )
+            notificationManager?.updateNotification(PlaybackStatus.PAUSED)
+
         }
     }
 
@@ -120,7 +108,8 @@ class AudioPlayerService : Service(), MediaPlayer.OnCompletionListener,
     override fun onCreate() {
         super.onCreate()
         // Perform one-time setup procedures
-        notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager =
+            EQNotificationManager(audioService = this, context = applicationContext)
 
         // Manage incoming phone calls during playback.
         // Pause MediaPlayer on incoming call,
@@ -129,7 +118,7 @@ class AudioPlayerService : Service(), MediaPlayer.OnCompletionListener,
         //ACTION_AUDIO_BECOMING_NOISY -- change in audio outputs -- BroadcastReceiver
         registerBecomingNoisyReceiver()
         //Listen for new Audio to play -- BroadcastReceiver
-        register_playNewAudio()
+        registerPlayNewAudio()
     }
 
     override fun onCompletion(p0: MediaPlayer?) {
@@ -188,27 +177,27 @@ class AudioPlayerService : Service(), MediaPlayer.OnCompletionListener,
         Log.e("tagg", "onDestroy() called")
         if (mediaPlayer != null) {
             stopMedia()
-            mediaPlayer?.release();
+            mediaPlayer?.release()
         }
-        removeAudioFocus();
+        removeAudioFocus()
         //Disable the PhoneStateListener
         if (phoneStateListener != null) {
-            telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_NONE);
+            telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_NONE)
         }
 
-        removeNotification();
+        notificationManager?.removeNotification()
 
         //unregister BroadcastReceivers
-        unregisterReceiver(becomingNoisyReceiver);
-        unregisterReceiver(playNewAudio);
+        unregisterReceiver(becomingNoisyReceiver)
+        unregisterReceiver(playNewAudio)
 
         //clear cached playlist
-        StorageUtil(applicationContext).clearCachedAudioPlaylist();
+        StorageUtil(applicationContext).clearCachedAudioPlaylist()
     }
 
     override fun onPrepared(p0: MediaPlayer?) {
         //Invoked when the media source is ready for playback.
-        playMedia();
+        playMedia()
     }
 
     override fun onError(p0: MediaPlayer?, p1: Int, p2: Int): Boolean {
@@ -271,12 +260,12 @@ class AudioPlayerService : Service(), MediaPlayer.OnCompletionListener,
         mediaPlayer = MediaPlayer()
         //Set up MediaPlayer event listeners
         mediaPlayer?.let {
-            it.setOnCompletionListener(this@AudioPlayerService)
-            it.setOnErrorListener(this@AudioPlayerService)
-            it.setOnPreparedListener(this@AudioPlayerService)
-            it.setOnBufferingUpdateListener(this@AudioPlayerService)
-            it.setOnSeekCompleteListener(this@AudioPlayerService)
-            it.setOnInfoListener(this@AudioPlayerService)
+            it.setOnCompletionListener(this@MediaService)
+            it.setOnErrorListener(this@MediaService)
+            it.setOnPreparedListener(this@MediaService)
+            it.setOnBufferingUpdateListener(this@MediaService)
+            it.setOnSeekCompleteListener(this@MediaService)
+            it.setOnInfoListener(this@MediaService)
             //Reset so that the MediaPlayer is not pointing to another data source
             it.reset()
             it.setAudioAttributes(
@@ -286,7 +275,7 @@ class AudioPlayerService : Service(), MediaPlayer.OnCompletionListener,
             )
             try {
                 // Set the data source to the mediaFile location
-                it.setDataSource(activeAudio?.data);
+                it.setDataSource(activeAudio?.data)
             } catch (e: IOException) {
                 e.printStackTrace()
                 stopSelf()
@@ -307,23 +296,22 @@ class AudioPlayerService : Service(), MediaPlayer.OnCompletionListener,
      * clients, we don't need to deal with IPC.
      */
     inner class LocalBinder : Binder() {
-        val service: AudioPlayerService
-            get() = this@AudioPlayerService
+        val service: MediaService
+            get() = this@MediaService
 
     }
 
     companion object {
-        private const val TAG = "AudioPlayerService"
-        private const val NOTIFICATION_CHANNEL_ID = "audio_channel_01"
-            const val PLAY_NEW_AUDIO = "com.ckj.audiolibrary.PlayNewAudio"
-
+        private const val TAG = "MediaService"
+        const val PLAY_NEW_AUDIO = "com.ckj.eqaudioplayer.PlayNewAudio"
     }
 
     private fun playMedia() {
         if (mediaPlayer?.isPlaying == false) {
             mediaPlayer?.start()
-            val notification = buildNotification(PlaybackStatus.PLAYING).build()
-            startForeground(NOTIFICATION_ID, notification)
+            val notification =
+                notificationManager?.buildNotification(PlaybackStatus.PLAYING, resources)?.build()
+            notificationManager?.NOTIFICATION_ID?.let { startForeground(it, notification) }
         }
     }
 
@@ -334,14 +322,14 @@ class AudioPlayerService : Service(), MediaPlayer.OnCompletionListener,
         }
     }
 
-     fun pauseMedia() {
+    fun pauseMedia() {
         if (mediaPlayer?.isPlaying == true) {
             mediaPlayer?.pause()
             resumePosition = mediaPlayer?.currentPosition
         }
     }
 
-     fun resumeMedia() {
+    fun resumeMedia() {
         if (mediaPlayer?.isPlaying == false) {
             resumePosition?.let { mediaPlayer?.seekTo(it) }
             mediaPlayer?.start()
@@ -359,7 +347,7 @@ class AudioPlayerService : Service(), MediaPlayer.OnCompletionListener,
                     build()
                 })
                 setAcceptsDelayedFocusGain(true)
-                setOnAudioFocusChangeListener(this@AudioPlayerService)
+                setOnAudioFocusChangeListener(this@MediaService)
                 build()
 
             }
@@ -439,7 +427,7 @@ class AudioPlayerService : Service(), MediaPlayer.OnCompletionListener,
     }
 
 
-    private fun register_playNewAudio() {
+    private fun registerPlayNewAudio() {
         //Register playNewMedia receiver
         val filter = IntentFilter(PLAY_NEW_AUDIO)
         registerReceiver(playNewAudio, filter)
@@ -450,7 +438,7 @@ class AudioPlayerService : Service(), MediaPlayer.OnCompletionListener,
         if (mediaSessionManager != null) return  //mediaSessionManager exists
         mediaSessionManager = getSystemService(MEDIA_SESSION_SERVICE) as MediaSessionManager
         // Create a new MediaSession
-        mediaSession = MediaSessionCompat(applicationContext, "AudioPlayer")
+        mediaSession = MediaSessionCompat(applicationContext, "EQAudioPlayer")
         //Get MediaSessions transport controls
         transportControls = mediaSession?.controller?.transportControls
         //set MediaSession -> ready to receive media commands
@@ -468,45 +456,37 @@ class AudioPlayerService : Service(), MediaPlayer.OnCompletionListener,
             override fun onPlay() {
                 super.onPlay()
                 resumeMedia()
-                notificationManager.notify(
-                    NOTIFICATION_ID,
-                    buildNotification(PlaybackStatus.PLAYING).build()
-                )
+                notificationManager?.updateNotification(PlaybackStatus.PLAYING)
+
             }
 
             override fun onPause() {
                 super.onPause()
                 pauseMedia()
-                notificationManager.notify(
-                    NOTIFICATION_ID,
-                    buildNotification(PlaybackStatus.PAUSED).build()
-                )
+                notificationManager?.updateNotification(PlaybackStatus.PAUSED)
+
             }
 
             override fun onSkipToNext() {
                 super.onSkipToNext()
                 skipToNext()
                 updateMetaData()
-                notificationManager.notify(
-                    NOTIFICATION_ID,
-                    buildNotification(PlaybackStatus.PLAYING).build()
-                )
+                notificationManager?.updateNotification(PlaybackStatus.PLAYING)
+
             }
 
             override fun onSkipToPrevious() {
                 super.onSkipToPrevious()
                 skipToPrevious()
                 updateMetaData()
-                notificationManager.notify(
-                    NOTIFICATION_ID,
-                    buildNotification(PlaybackStatus.PLAYING).build()
-                )
+                notificationManager?.updateNotification(PlaybackStatus.PLAYING)
+
             }
 
             override fun onStop() {
                 super.onStop()
                 stopMedia()
-                removeNotification()
+                notificationManager?.removeNotification()
                 //Stop the service
                 stopSelf()
             }
@@ -572,110 +552,6 @@ class AudioPlayerService : Service(), MediaPlayer.OnCompletionListener,
         initMediaPlayer()
     }
 
-    private fun buildNotification(playbackStatus: PlaybackStatus): Builder {
-        var notificationAction = R.drawable.ic_media_pause //needs to be initialized
-        var play_pauseAction: PendingIntent? = null
-
-        //Build a new notification according to the current state of the MediaPlayer
-        if (playbackStatus === PlaybackStatus.PLAYING) {
-            notificationAction = R.drawable.ic_media_pause
-            //create the pause action
-            play_pauseAction = playbackAction(1)
-        } else if (playbackStatus === PlaybackStatus.PAUSED) {
-            notificationAction = R.drawable.ic_media_play
-            //create the play action
-            play_pauseAction = playbackAction(0)
-        }
-        val largeIcon = BitmapFactory.decodeResource(
-            resources,
-            R.drawable.ic_media_play
-        ) //replace with your own image
-
-        // Create a new Notification
-        // 1. Create Notification Channel for O+ and beyond devices (26+).
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-
-            val notificationChannel = NotificationChannel(
-                NOTIFICATION_CHANNEL_ID, "Audio", NotificationManager.IMPORTANCE_DEFAULT
-            )
-
-            // Adds NotificationChannel to system. Attempting to create an
-            // existing notification channel with its original values performs
-            // no operation, so it's safe to perform the below sequence.
-            notificationManager.createNotificationChannel(notificationChannel)
-        }
-
-        return notificationBuilder(largeIcon, notificationAction, play_pauseAction)
-    }
-
-    private fun notificationBuilder(
-        largeIcon: Bitmap?,
-        notificationAction: Int,
-        play_pauseAction: PendingIntent?
-    ) = Builder(this, NOTIFICATION_CHANNEL_ID)
-        .setShowWhen(false)
-        .setOngoing(mediaPlayer?.isPlaying == true)// Set the Notification style
-        .setStyle(
-            NotificationCompat.MediaStyle() // Attach our MediaSession token
-                .setMediaSession(mediaSession?.sessionToken) // Show our playback controls in the compact notification view.
-                .setShowActionsInCompactView(0, 1, 2)
-        ) // Set the Notification color
-        .setColor(
-            ContextCompat.getColor(
-                applicationContext,
-                R.color.holo_blue_dark
-            )
-        ) // Set the large and small icons
-        .setLargeIcon(largeIcon)
-        .setSmallIcon(R.drawable.stat_sys_headset) // Set Notification content information
-        .setContentText(activeAudio?.artist)
-        .setContentTitle(activeAudio?.title)
-        .setContentInfo(activeAudio?.album) // Add playback actions
-        .addAction(R.drawable.ic_media_previous, "previous", playbackAction(3))
-        .addAction(notificationAction, "pause", play_pauseAction)
-        .addAction(
-            R.drawable.ic_media_next,
-            "next",
-            playbackAction(2)
-        )
-
-    private fun removeNotification() {
-        notificationManager.cancel(NOTIFICATION_ID)
-    }
-
-    private fun playbackAction(actionNumber: Int): PendingIntent? {
-        val playbackAction = Intent(this, AudioPlayerService::class.java)
-        when (actionNumber) {
-            0 -> {
-                // Play
-                playbackAction.action = ACTION_PLAY
-                return PendingIntent.getService(this, actionNumber, playbackAction, 0)
-            }
-            1 -> {
-                // Pause
-                playbackAction.action = ACTION_PAUSE
-                return PendingIntent.getService(this, actionNumber, playbackAction, 0)
-            }
-            2 -> {
-                // Next track
-                playbackAction.action = ACTION_NEXT
-                return PendingIntent.getService(this, actionNumber, playbackAction, 0)
-            }
-            3 -> {
-                // Previous track
-                playbackAction.action = ACTION_PREVIOUS
-                return PendingIntent.getService(this, actionNumber, playbackAction, 0)
-            }
-
-            4-> {
-                playbackAction.action= ACTION_STOP
-                return PendingIntent.getService(this,actionNumber,playbackAction,0)
-            }
-            else -> {
-            }
-        }
-        return null
-    }
 
     private fun handleIncomingActions(playbackAction: Intent?) {
         if (playbackAction == null || playbackAction.action == null) return
@@ -697,6 +573,19 @@ class AudioPlayerService : Service(), MediaPlayer.OnCompletionListener,
                 transportControls?.stop()
             }
         }
+    }
+
+    internal fun getMediaSession(): MediaSessionCompat.Token? {
+        return mediaSession?.sessionToken
+    }
+
+    @JvmName("getMediaPlayer1")
+    internal fun getMediaPlayer(): MediaPlayer? {
+        return mediaPlayer
+    }
+
+    internal fun getCurrentAudio(): Audio? {
+        return activeAudio
     }
 
 }

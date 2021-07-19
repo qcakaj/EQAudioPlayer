@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.ckj.easyaudioplayer">
+    package="com.ckj.eqaudioplayer">
 
     <!-- Required for foreground services on P+. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -13,7 +13,7 @@
             </intent-filter>
         </receiver>
         <service
-            android:name="com.ckj.easyaudioplayer.AudioPlayerService"
+            android:name="com.ckj.eqaudioplayer.MediaService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />

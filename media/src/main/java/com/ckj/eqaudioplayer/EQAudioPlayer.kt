@@ -1,4 +1,4 @@
-package com.ckj.easyaudioplayer
+package com.ckj.eqaudioplayer
 
 import android.content.ComponentName
 import android.content.Intent
@@ -8,28 +8,24 @@ import android.os.IBinder
 import androidx.appcompat.app.AppCompatActivity
 import com.ckj.commonv2.Audio
 
-class VianovaAudio(
+class EQAudioPlayer(
     private val activity: AppCompatActivity,
     private val audioList: List<Audio>? = null
 ) {
-   private var audioPlayerService: AudioPlayerService? = null
+   private var mediaService: MediaService? = null
     var serviceBound = false
 
-     private val audioPlayerServiceConnection by lazy {
-        object : ServiceConnection {
-            override fun onServiceConnected(p0: ComponentName?, p1: IBinder?) {
-                val binder = p1 as AudioPlayerService.LocalBinder
-                audioPlayerService = binder.service
-                serviceBound = true
-            }
+     private val audioPlayerServiceConnection = object : ServiceConnection {
+         override fun onServiceConnected(p0: ComponentName?, p1: IBinder?) {
+             val binder = p1 as MediaService.LocalBinder
+             mediaService = binder.service
+             serviceBound = true
+         }
 
-            override fun onServiceDisconnected(p0: ComponentName?) {
-                serviceBound = false
-            }
-        }
-    }
-
-
+         override fun onServiceDisconnected(p0: ComponentName?) {
+             serviceBound = false
+         }
+     }
 
 
     class Builder(private val activity: AppCompatActivity) {
@@ -42,8 +38,8 @@ class VianovaAudio(
         }
 
 
-        fun build(): VianovaAudio {
-            return VianovaAudio(
+        fun build(): EQAudioPlayer {
+            return EQAudioPlayer(
                this.activity,
                 this.audioList
 
@@ -53,6 +49,7 @@ class VianovaAudio(
 
     }
 
+
     fun playAudio(audioIndex: Int) {
         //Check is service is active
         if (!serviceBound) {
@@ -60,7 +57,7 @@ class VianovaAudio(
             val storage = this.activity.let { com.ckj.commonv2.StorageUtil(it) }
             storage.storeAudio(audioList)
             storage.storeAudioIndex(audioIndex)
-            val playerIntent = Intent(this.activity, AudioPlayerService::class.java)
+            val playerIntent = Intent(this.activity, MediaService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 this.activity.startForegroundService(playerIntent)
             } else {
@@ -77,34 +74,42 @@ class VianovaAudio(
 
             //Service is active
             //Send a broadcast to the service -> PLAY_NEW_AUDIO
-            val broadcastIntent = Intent(AudioPlayerService.PLAY_NEW_AUDIO)
+            val broadcastIntent = Intent(MediaService.PLAY_NEW_AUDIO)
             activity.sendBroadcast(broadcastIntent)
         }
     }
 
-    val isActive : Boolean? by lazy {
-     audioPlayerService?.mediaPlayer?.isPlaying
-}
-    val currentSeconds by lazy {
-        audioPlayerService?.mediaPlayer?.currentSeconds
+     val isPlayerActive  get() =  mediaService?.mediaPlayer?.isPlaying
+
+
+     val currentAudioProgress get() = mediaService?.mediaPlayer?.currentSeconds
+
+
+
+    fun setAudioProgress(p1:Int) {
+       mediaService?.mediaPlayer?.seekTo(p1 * 1000)
     }
 
-    fun setProgress(p1:Int) {
-       audioPlayerService?.mediaPlayer?.seekTo(p1 * 1000)
+    fun pauseAudio() {
+        mediaService?.pauseMedia()
     }
 
-    fun pause() {
-        audioPlayerService?.pauseMedia()
+    fun resumeAudio() {
+      mediaService?.resumeMedia()
     }
 
-    fun resume() {
-      audioPlayerService?.resumeMedia()
-    }
-
-    fun stop() {
-     audioPlayerService?.stopSelf()
+    private fun stop() {
+     mediaService?.stopSelf()
 
     }
 
-    fun getServiceConnectionObject() = audioPlayerServiceConnection
+    private fun getServiceConnectionObject() = audioPlayerServiceConnection
+
+    fun releaseAudioPlayer() {
+        if (serviceBound) {
+            activity.unbindService(getServiceConnectionObject())
+            //service is active
+            stop()
+        }
+    }
 }
